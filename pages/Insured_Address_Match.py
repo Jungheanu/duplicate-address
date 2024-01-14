@@ -108,18 +108,28 @@ if uploaded_file is not None:
 
     st.write('Data Preview:', df.head())
 
- # Button to find matches
+    # Agent filter in the sidebar, aligned with the file uploader
+    agent_filter = st.sidebar.text_input("Filter by Agent Name:")
+
+    # Button to find matches
     if st.button('Find Similar Addresses'):
         with st.spinner('Finding similar addresses...'):
             df = compute_similarity(df)
             hit_ratio_df = compute_hit_ratio(df)
             df = df.merge(hit_ratio_df, on='AgentName', how='left')
+
+            # Apply the filter if the user has entered a filter term
+            if agent_filter:
+                df_filtered = df[df['AgentName'].str.contains(agent_filter, case=False, na=False)]
+                df = df_filtered  # Use the filtered DataFrame for further processing and display
+
             st.dataframe(df[['AccountID', 'InsuredID', 'AgentName', 'Insured', 'Combined_Address', 'MatchFlag', 'HitRatio']], height=800)
 
-            # Generate download link for the processed DataFrame
+            # Generate download link for the (filtered) DataFrame
             csv = df.to_csv(index=False).encode('utf-8')
             b64 = base64.b64encode(csv).decode()  # Encode to base64
             href = f'<a href="data:file/csv;base64,{b64}" download="similar_addresses.csv">Download processed data as CSV</a>'
             st.markdown(href, unsafe_allow_html=True)
+
 else:
     st.write("Please upload a CSV file to proceed.")
