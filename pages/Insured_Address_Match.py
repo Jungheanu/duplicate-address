@@ -21,59 +21,42 @@ def normalize_address(address):
 
 # Function to compute similarity
 def compute_similarity(df, batch_size=1000):
-    # Create combined address fields for Address1 and Address2
-    df['Combined_Address1'] = df['Address1'].astype(str).fillna('') + ' ' + df['City'].astype(str).fillna('') + ' ' + df['State'].astype(str).fillna('') + ' ' + df['Zip'].astype(str).fillna('')
-    df['Combined_Address2'] = df['Address2'].astype(str).fillna('') + ' ' + df['City'].astype(str).fillna('') + ' ' + df['State'].astype(str).fillna('') + ' ' + df['Zip'].astype(str).fillna('')
+    # Initialize an empty DataFrame to store all matches
+    all_matches = pd.DataFrame()
 
-    # Normalize both combined address fields
-    df['Combined_Address1'] = df['Combined_Address1'].apply(normalize_address)
-    df['Combined_Address2'] = df['Combined_Address2'].apply(normalize_address)
+    # Group by AgentName and process each group separately
+    for agent_name, group in df.groupby('AgentName'):
+        # Create and normalize combined address fields within the group
+        group['Combined_Address1'] = group['Address1'].astype(str).fillna('') + ' ' + group['City'].astype(str).fillna('') + ' ' + group['State'].astype(str).fillna('') + ' ' + group['Zip'].astype(str).fillna('')
+        group['Combined_Address2'] = group['Address2'].astype(str).fillna('') + ' ' + group['City'].astype(str).fillna('') + ' ' + group['State'].astype(str).fillna('') + ' ' + group['Zip'].astype(str).fillna('')
+        group['Combined_Address1'] = group['Combined_Address1'].apply(normalize_address)
+        group['Combined_Address2'] = group['Combined_Address2'].apply(normalize_address)
 
-    # Mark rows with invalid addresses (where both Address1 and Address2 are blank)
-    invalid_address_mask = df['Address1'].fillna('').str.strip().eq('') & df['Address2'].fillna('').str.strip().eq('')
-    df.loc[invalid_address_mask, 'Combined_Address1'] = np.nan  # or some invalid marker
-    df.loc[invalid_address_mask, 'Combined_Address2'] = np.nan  # or some invalid marker
+        # Initialize TF-IDF Vectorizer and process both address fields within the group
+        tfidf_vectorizer = TfidfVectorizer(dtype=np.float32)
+        tfidf_matrix1 = tfidf_vectorizer.fit_transform(group['Combined_Address1'])
+        tfidf_matrix2 = tfidf_vectorizer.transform(group['Combined_Address2'])
 
-    # Initialize TF-IDF Vectorizer and process valid address fields
-    tfidf_vectorizer = TfidfVectorizer(dtype=np.float32)
-    # Use dropna() to exclude invalid addresses from TF-IDF vectorization
-    tfidf_matrix1 = tfidf_vectorizer.fit_transform(df['Combined_Address1'].dropna())
-    tfidf_matrix2 = tfidf_vectorizer.transform(df['Combined_Address2'].dropna())
+        # Process in batches within each group
+        for start in range(0, len(group), batch_size):
+            end = min(start + batch_size, len(group))
+            # Compute cosine similarity for each combination of address fields within the group
+            batch_cos_sim_matrix1 = cosine_similarity(tfidf_matrix1[start:end], tfidf_matrix1)
+            batch_cos_sim_matrix2 = cosine_similarity(tfidf_matrix2[start:end], tfidf_matrix2)
+            batch_cos_sim_matrix_cross = cosine_similarity(tfidf_matrix1[start:end], tfidf_matrix2)
 
+            # Process similarity results for each matrix
+            for batch_cos_sim_matrix in [batch_cos_sim_matrix1, batch_cos_sim_matrix2, batch_cos_sim_matrix_cross]:
+                cos_sim_df = pd.DataFrame(batch_cos_sim_matrix, index=group.index[start:end], columns=group.index)
+                matches = cos_sim_df.stack().reset_index()
+                matches.columns = ['Index1', 'Index2', 'CosineSim']
+                matches = matches[matches['Index1'] != matches['Index2']]  # Remove self-comparison
+                threshold = 0.8  # Can be adjusted
+                potential_matches = matches[matches['CosineSim'] >= threshold]
+                all_matches = pd.concat([all_matches, potential_matches], ignore_index=True)
 
-    # Initialize TF-IDF Vectorizer and process both address fields
-    tfidf_vectorizer = TfidfVectorizer(dtype=np.float32)
-    tfidf_matrix1 = tfidf_vectorizer.fit_transform(df['Combined_Address1'])
-    tfidf_matrix2 = tfidf_vectorizer.transform(df['Combined_Address2'])
-
-    # Initialize an empty list to store DataFrames for matches
-    matches_list = []
-
-    # Process in batches
-    for start in range(0, len(df), batch_size):
-        end = min(start + batch_size, len(df))
-        
-        # Compute cosine similarity for each combination of address fields
-        batch_cos_sim_matrix1 = cosine_similarity(tfidf_matrix1[start:end], tfidf_matrix1)
-        batch_cos_sim_matrix2 = cosine_similarity(tfidf_matrix2[start:end], tfidf_matrix2)
-        batch_cos_sim_matrix_cross = cosine_similarity(tfidf_matrix1[start:end], tfidf_matrix2)
-
-        # Process similarity results for each matrix
-        for batch_cos_sim_matrix in [batch_cos_sim_matrix1, batch_cos_sim_matrix2, batch_cos_sim_matrix_cross]:
-            cos_sim_df = pd.DataFrame(batch_cos_sim_matrix, index=df.index[start:end], columns=df.index)
-
-            # Identify index pairs with high cosine similarity scores in this batch
-            matches = cos_sim_df.stack().reset_index()
-            matches.columns = ['Index1', 'Index2', 'CosineSim']
-            matches = matches[matches['Index1'] != matches['Index2']]  # Remove self-comparison
-
-            # Filter matches based on a threshold
-            threshold = 0.8  # Can be adjusted
-            potential_matches = matches[matches['CosineSim'] >= threshold]
-            matches_list.append(potential_matches)
-
-    # Concatenate all matches DataFrames
-    all_matches = pd.concat(matches_list, ignore_index=True)
+    ## Concatenate all matches DataFrames
+    # all_matches = pd.concat(matches_list, ignore_index=True)
 
     # Filter by different InsuredID and remove duplicates
     all_matches = all_matches.drop_duplicates(subset=['Index1', 'Index2'])
